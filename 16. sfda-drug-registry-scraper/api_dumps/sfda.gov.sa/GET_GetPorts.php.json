@@ -1,0 +1,106 @@
+{
+    "1_METADATA": {
+        "url": "https://sfda.gov.sa/GetPorts.php",
+        "method": "GET",
+        "status_code": 200
+    },
+    "2_HOW_TO_REPLAY": {
+        "required_headers": {
+            "accept": "application/json, text/javascript, */*; q=0.01"
+        },
+        "post_payload": null
+    },
+    "3_DATA_EXTRACTED": {
+        "Years": [
+            "2026",
+            "2026"
+        ],
+        "Ports": [
+            {
+                "Id": 1,
+                "Name": "مطار الملك خالد الدولي",
+                "NameEn": "King Khalid International Airport"
+            },
+            {
+                "Id": 2,
+                "Name": "مطار الملك فهد بالدمام",
+                "NameEn": "King Fahd International Airport"
+            },
+            {
+                "Id": 3,
+                "Name": "ميناء جده الاسلامي",
+                "NameEn": "Jeddah Islamic Seaport"
+            },
+            {
+                "Id": 4,
+                "Name": "منفذ البطحاء",
+                "NameEn": "Batha Landport"
+            },
+            {
+                "Id": 5,
+                "Name": "منفذ جسر الملك فهد",
+                "NameEn": "King Fahad Causeway Landport"
+            },
+            {
+                "Id": 6,
+                "Name": " منفذ الحديثة",
+                "NameEn": "Haditha Landport"
+            },
+            {
+                "Id": 7,
+                "Name": "منفذ الخفجي",
+                "NameEn": "Khafji Landport"
+            },
+            {
+                "Id": 8,
+                "Name": "منفذ حاله عمار",
+                "NameEn": "Halt Ammar Landport"
+            },
+            {
+                "Id": 9,
+                "Name": "منفذ سلوى",
+                "NameEn": "Salawa Landport"
+            },
+            {
+                "Id": 10,
+                "Name": "منفذ الطوال",
+                "NameEn": "Twal Landport"
+            },
+            {
+                "Id": 11,
+                "Name": "منفذ الدره",
+                "NameEn": "Durah Landport"
+            },
+            {
+                "Id": 12,
+                "Name": "مطار الملك عبد العزيز الدولي",
+                "NameEn": "King Abdulaziz International Airport"
+            },
+            {
+                "Id": 13,
+                "Name": "مطار الأمير محمد بن عبدالعزيز الدولي",
+                "NameEn": "Prince Mohammad Bin Abdulaziz International Airport"
+            },
+            {
+                "Id": 14,
+                "Name": "ميناء الرياض الجاف",
+                "NameEn": "AlRyad DryPort"
+            },
+            {
+                "Id": 15,
+                "Name": "ميناء الملك عبدالله رابغ",
+                "NameEn": "King Abdullah Seaport"
+            },
+            {
+                "Id": 16,
+                "Name": "ميناء الملك عبدالعزيز الدمام",
+                "NameEn": "King Abdulaziz Seaport"
+            },
+            {
+                "Id": 17,
+                "Name": "المركز الموحد",
+                "NameEn": "Unified Center"
+            }
+        ]
+    }
+}

@@ -1,0 +1,278 @@
+SFDA DRUGS LIST — TECHNICAL AUDIT REPORT
+Generated: 2026-04-14 00:24:28
+Target:    https://www.sfda.gov.sa/en/drugs-list
+============================================================
+
+SFDA DRUGS LIST — TECHNICAL AUDIT REPORT
+Generated: 2026-04-14 00:24:28
+Target: https://www.sfda.gov.sa/en/drugs-list
+============================================================
+
+════════════════════════════════════════════════════════════
+  VAR 1 — RENDERING ARCHITECTURE (Static/SSR vs Dynamic/CSR)
+════════════════════════════════════════════════════════════
+
+  ▸ Mengambil halaman utama...
+✓ HTTP Status: 200
+  Content-Type: text/html; charset=UTF-8
+  Content-Length: 131,898 bytes
+  Final URL: https://www.sfda.gov.sa/en/drugs-list
+
+  ▸ Analisis konten HTML...
+⚠ Tidak ada CSR framework terdeteksi — kemungkinan SSR/server-rendered
+  Drug-related keywords ditemukan di HTML: 3/6
+✓ API hints di HTML:
+      → \/
+► 
+  KESIMPULAN: Site kemungkinan SSR — data ada di HTML
+    → STRATEGI: Parse HTML dengan BeautifulSoup/lxml
+
+════════════════════════════════════════════════════════════
+  VAR 2 — PAGINATION & NAVIGATION
+════════════════════════════════════════════════════════════
+
+  ▸ Test URL-based pagination patterns...
+  Test: https://www.sfda.gov.sa/en/drugs-list?page=2&pageSize=10
+✓ Pattern VALID: ?page={} + &pageSize=10
+  Test: https://www.sfda.gov.sa/en/drugs-list?pageNumber=2&pageSize=10
+✓ Pattern VALID: ?pageNumber={} + &pageSize=10
+  Test: https://www.sfda.gov.sa/en/drugs-list?pageNo=2&pageSize=10
+✓ Pattern VALID: ?pageNo={} + &pageSize=10
+  Test: https://www.sfda.gov.sa/en/drugs-list?p=2&pageSize=10
+✓ Pattern VALID: ?p={} + &pageSize=10
+  Test: https://www.sfda.gov.sa/en/drugs-list?pg=2&pageSize=10
+✓ Pattern VALID: ?pg={} + &pageSize=10
+  Test: https://www.sfda.gov.sa/en/drugs-list?offset=2&pageSize=10
+✓ Pattern VALID: ?offset={} + &pageSize=10
+  Test: https://www.sfda.gov.sa/en/drugs-list?start=2&pageSize=10
+✓ Pattern VALID: ?start={} + &pageSize=10
+  
+  Pattern terbaik: ?page={}
+
+  ▸ Mencari indikator total records di halaman utama...
+
+════════════════════════════════════════════════════════════
+  VAR 3 — DOM STRUCTURE & CSS SELECTORS
+════════════════════════════════════════════════════════════
+
+  ▸ Analisis struktur HTML...
+  <table> tags: 2
+  <tr> tags: 34
+  <td> tags: 66
+  <div> tags: 198
+
+  ▸ Deteksi CSS selectors yang relevan...
+⚠ Tidak ada JSON-LD structured data
+✓ data-* attributes ditemukan: data-dismiss, data-webform-help, data-effect, data-toggle, data-progress-type, data-disable-refocus, data-drupal-selector, data-drupal-link-system-path, data-pg, data-target
+✓ Data kemungkinan ada di HTML table — BeautifulSoup bisa digunakan
+
+════════════════════════════════════════════════════════════
+  VAR 4 — ANTI-BOT & SECURITY DETECTION
+════════════════════════════════════════════════════════════
+
+  ▸ Test 1: Request dengan browser User-Agent...
+✓ Browser UA → Status: 200
+
+  ▸ Test 2: Request dengan Python/bot User-Agent...
+✓ Bot UA → Status: 200
+✓ Bot UA dan Browser UA mendapat response sama — kemungkinan tidak ada UA filtering
+
+  ▸ Test 3: Analisis security headers...
+  X-Frame-Options: SAMEORIGIN
+✓ Tidak ada WAF terkenal terdeteksi dari headers
+
+  ▸ Test 4: Rate limit test (3 request cepat)...
+  Request 1: 200
+  Request 2: 200
+  Request 3: 200
+✓ Tidak ada rate limiting terdeteksi pada 3 request cepat
+
+  ▸ Test 5: Honeypot detection...
+✓ Tidak ada honeypot links terdeteksi
+
+════════════════════════════════════════════════════════════
+  VAR 5 — HIDDEN API DISCOVERY (Critical)
+════════════════════════════════════════════════════════════
+
+  ▸ Testing 18 kandidat API endpoints...
+  Testing: https://www.sfda.gov.sa/api/drugs
+  Testing: https://www.sfda.gov.sa/api/v1/drugs
+  Testing: https://www.sfda.gov.sa/api/v2/drugs
+  Testing: https://www.sfda.gov.sa/api/drugs/list
+  Testing: https://www.sfda.gov.sa/api/drugs/search
+  Testing: https://www.sfda.gov.sa/api/drug/list
+  Testing: https://www.sfda.gov.sa/api/drug/search
+  Testing: https://www.sfda.gov.sa/en/api/drugs
+  Testing: https://www.sfda.gov.sa/api/medications
+  Testing: https://www.sfda.gov.sa/api/products
+  Testing: https://www.sfda.gov.sa/api/registrations
+  Testing: https://www.sfda.gov.sa/en/drugs-list/api
+  Testing: https://www.sfda.gov.sa/sfda-api/drugs
+  Testing: https://www.sfda.gov.sa/api/human-drugs
+  Testing: https://www.sfda.gov.sa/api/registered-drugs
+  Testing: https://www.sfda.gov.sa/api/drug-registration/list
+  Testing: https://www.sfda.gov.sa/api/portal/drugs
+  Testing: https://www.sfda.gov.sa/api/portal/drugs/list
+
+  ▸ Testing POST endpoints...
+⚠ 
+  Tidak ada hidden API ditemukan secara otomatis
+    → AKSI MANUAL DIPERLUKAN: Buka DevTools → Network → XHR saat browse halaman
+    → Cari request yang return JSON dengan struktur obat
+
+════════════════════════════════════════════════════════════
+  VAR 6 — AUTHENTICATION & SESSION MANAGEMENT
+════════════════════════════════════════════════════════════
+
+  ▸ Analisis cookies dan session...
+  Cookie: TS0178ab38 = 011ba495a5e5b6e4139f01b178876a...
+✓ Tidak ada CSRF cookie terdeteksi
+
+  ▸ Cek login requirement...
+✓ Tidak ada login wall — data publik dapat diakses tanpa login
+
+════════════════════════════════════════════════════════════
+  VAR 7 — SCALE, VOLUME & TIME ESTIMATION
+════════════════════════════════════════════════════════════
+
+  ▸ Estimasi volume data dari berbagai sumber...
+✓ robots.txt ditemukan:
+    #
+    # robots.txt
+    #
+    # This file is to prevent the crawling and indexing of certain parts
+    # of your site by web crawlers and spiders run by sites like Yahoo!
+    # and Google. By telling these "robots" where not to go on your site,
+    # you save bandwidth and server resources.
+    #
+    # This file will be ignored unless it is at the root of your host:
+    # Used:    http://example.com/robots.txt
+    # Ignored: http://example.com/site/robots.txt
+    #
+    # For more information about the robots.txt standard, see:
+    # http://www.robotstxt.org/robotstxt.html
+
+  ▸ Estimasi records...
+  Estimasi berdasarkan data SFDA publik:
+    Min (conservative): ~10,000 records → 100 pages → 0.0 jam
+    Mid (most likely): ~25,000 records → 250 pages → 0.1 jam
+    Max (all types): ~60,000 records → 600 pages → 0.2 jam
+
+  ▸ Rekomendasi strategi berdasarkan volume...
+✓ Volume < 100K → Single machine sequential scraping (OPTIMAL)
+  Tidak perlu Scrapy-Redis atau distributed setup
+  Estimasi waktu selesai: 0.1–0.2 jam
+
+════════════════════════════════════════════════════════════
+  REKOMENDASI STACK & ARSITEKTUR FINAL
+════════════════════════════════════════════════════════════
+✓ PRIMARY STACK: requests + BeautifulSoup + pandas + openpyxl
+✓ STRATEGI: HTML parsing (SSR)
+✓ ANTI-BOT: Header standar cukup + random delay 1-3 detik
+✓ AUTH: Tidak diperlukan — data publik
+► PIPELINE ARSITEKTUR:
+    1. Recon manual 10 menit di DevTools → identifikasi exact API endpoint
+    2. Test endpoint dengan curl → validasi response JSON
+    3. Fetch halaman 1 → extract totalCount → hitung total_pages
+    4. Loop semua halaman dengan delay 1.5s antar request
+    5. Parse 5 field target per drug record
+    6. Flag field Arabic, dedup by Registration Number
+    7. Export ke Excel dengan openpyxl
+
+════════════════════════════════════════════════════════════
+  SUMMARY AUDIT — 7 VARIABEL KRITIS
+════════════════════════════════════════════════════════════
+
+  Variable               Value                            Status        
+  ----------------------------------------------------------------------
+  1. Rendering           SSR                              static        
+  2. Pagination          ?page={}                         found         
+  3. DOM Structure       html_has_data                    -             
+  4. Anti-Bot            []                               OK            
+  5. Hidden API          None                             NOT FOUND     
+  6. Auth/Session        False                            OK            
+  7. Scale               ~25,000 records                  0.1h          
+
+════════════════════════════════════════════════════════════
+  OUTPUT FILES
+════════════════════════════════════════════════════════════
+  Laporan teks: sfda_audit_report.txt
+
+FULL AUDIT JSON:
+{
+  "timestamp": "2026-04-14 00:24:28",
+  "target": "https://www.sfda.gov.sa/en/drugs-list",
+  "variables": {
+    "rendering": {
+      "status": "static",
+      "type": "SSR",
+      "details": [
+        "status=200",
+        "bytes=131898",
+        "api_hint=\\/",
+        "frameworks=[]"
+      ]
+    },
+    "pagination": {
+      "status": "found",
+      "pattern": "?page={}",
+      "total": null,
+      "details": []
+    },
+    "dom": {
+      "status": "html_has_data",
+      "selectors": [
+        "table",
+        "tbody tr",
+        "td"
+      ],
+      "details": [
+        "tables=2, rows=34",
+        "data_attrs=['data-dismiss', 'data-webform-help', 'data-effect', 'data-toggle', 'data-progress-type', 'data-disable-refocus', 'data-drupal-selector', 'data-drupal-link-system-path', 'data-pg', 'data-target']"
+      ]
+    },
+    "antibot": {
+      "waf": [],
+      "rate_limit": false,
+      "bot_block": false,
+      "details": [
+        "browser_ua_status=200",
+        "bot_ua_status=200"
+      ]
+    },
+    "hidden_api": {
+      "found": false,
+      "endpoint": null,
+      "pagination": null,
+      "sample": null
+    },
+    "session": {
+      "auth_required": false,
+      "cookies": [
+        {
+          "name": "TS0178ab38",
+          "secure": false,
+          "httponly": false
+        }
+      ],
+      "csrf": false,
+      "details": []
+    },
+    "scale": {
+      "estimated_records": 25000,
+      "pages": 250,
+      "time_hours": 0.10416666666666667,
+      "strategy": "single_machine_sequential",
+      "robots_txt": true
+    }
+  },
+  "recommendation": {
+    "stack": "requests + BeautifulSoup + pandas + openpyxl",
+    "strategy": "HTML parsing (SSR)",
+    "waf": false,
+    "csrf": false,
+    "auth": false,
+    "api": false
+  },
+  "api_found": null
+}
