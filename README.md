@@ -35,7 +35,7 @@
 
 # 🔬 SFDA Registered Drugs — Full Database Extraction
 
-> **Complete automated extraction of 8,792 drug registrations** from the Saudi Food and Drug Authority (SFDA) public database — reverse-engineered hidden API, zero login required, delivered as a clean Excel file.
+> Extract public drug registration data from the Saudi Food and Drug Authority (SFDA) website and save it as a formatted Excel file. The scraper uses the public drugs-list page and the Drupal AJAX detail route used by its **Details** links.
 
 <br/>
 
@@ -65,19 +65,20 @@
 │                   PROJECT PIPELINE FLOW                         │
 │                                                                 │
 │  1. TARGET ANALYSIS                                             │
-│     sfda.gov.sa/en/drugs-list                                   │
-│     └── DevTools recon → found hidden PHP endpoint             │
+│     www.sfda.gov.sa/en/drugs-list                               │
+│     └── Inspect the live list and its Details requests          │
 │                                                                 │
-│  2. HIDDEN API DISCOVERED ✓                                     │
-│     GET https://sfda.gov.sa/GetDrugs.php?page=N                │
-│     └── No auth, returns JSON, 10 records/page default         │
+│  2. FRONTEND DATA REQUESTS                                      │
+│     GET /en/drugs-list?page=N                                   │
+│     POST /en/details_data?...&_wrapper_format=...              │
+│     └── Drupal AJAX response contains each drug's detail HTML  │
 │                                                                 │
 │  3. TECHNICAL AUDIT (7 Variables)                               │
 │     Rendering  → SSR (Drupal-based)                            │
 │     Pagination → ?page=N pattern                               │
 │     Anti-Bot   → None detected                                 │
 │     Auth       → Public data, no login                         │
-│     Scale      → 876 pages × 10 = 8,792 records               │
+│     Pagination → discovered from the current page's live pager  │
 │                                                                 │
 │  4. AUTOMATED SCRAPER                                           │
 │     requests + retry logic + exponential backoff               │
@@ -97,31 +98,19 @@
 
 ## 🔍 API Reverse Engineering
 
-The SFDA drugs page renders via **Drupal CMS (SSR)** but loads drug data through a **hidden PHP endpoint** discovered via Chrome DevTools → Network tab → XHR filter:
+The SFDA drugs page renders its paginated list through **Drupal CMS**. Each row's **Details** link calls a Drupal AJAX route that returns a JSON command containing the drug's detail table:
 
 ```http
-GET https://sfda.gov.sa/GetDrugs.php?page=1
+GET https://www.sfda.gov.sa/en/drugs-list?page=0
+```
+
+```http
+POST https://www.sfda.gov.sa/en/details_data?nid=...&id=...&page=...&_wrapper_format=drupal_bootstrap4_modal
 Accept: application/json, text/javascript, */*; q=0.01
+X-Requested-With: XMLHttpRequest
 ```
 
-**Response structure:**
-```json
-{
-  "results": [...],
-  "currentPage": 1,
-  "pageCount": 876,
-  "pageSize": 10,
-  "rowCount": 8756,
-  "firstRowOnPage": 1,
-  "lastRowOnPage": 10
-}
-```
-
-A second endpoint was also discovered:
-```http
-GET https://sfda.gov.sa/GetPorts.php
-```
-Returns all Saudi ports/airports used in drug import logistics — 17 entries including airports, seaports, and land border crossings.
+The list page contains 20 rows and pager links. The scraper discovers the last page from the live pager rather than assuming a fixed record count. For each row, it replays the frontend's AJAX detail request with Drupal's page-state fields. The JSON response contains an `openBootstrap4Dialog` command whose HTML table supplies registration, manufacturer, agent, status, storage, and other fields. The scraper keeps the same session between list and detail requests and checkpoints each completed drug so an interrupted run can resume.
 
 <br/>
 
@@ -227,8 +216,8 @@ sfda-drug-registry-scraper/
 │   └── audit_scale()          # Volume & time estimation
 │
 ├── sfda_scraper.py            # Production scraper
-│   ├── fetch_page()           # HTTP GET + retry logic
-│   ├── probe_page_size()      # API metadata extraction
+│   ├── parse_drug_list()      # List rows, pager, and Drupal AJAX state
+│   ├── fetch_drug_detail()    # Drupal AJAX POST + retry logic
 │   ├── parse_record()         # Field mapping + Arabic flag
 │   ├── export_excel()         # Styled xlsx output
 │   └── scrape()               # Main loop + checkpoint
@@ -239,7 +228,7 @@ sfda-drug-registry-scraper/
 │
 ├── sfda_audit_report.txt      # Full audit report
 ├── sfda_scraper.log           # Runtime log
-├── sfda_checkpoint.json       # Auto-resume checkpoint
+├── sfda_checkpoint.jsonl      # Auto-resume checkpoint
 └── README.md
 ```
 
@@ -251,8 +240,9 @@ sfda-drug-registry-scraper/
 
 | Variable | Finding | Implication |
 |----------|---------|-------------|
-| Rendering | SSR (Drupal) | HTML has data, but hidden API is faster |
-| Pagination | `?page=N` | Simple GET loop |
+| Rendering | Drupal | List rows are server-rendered HTML |
+| Pagination | `?page=N` (zero-based) | Pager is discovered from the live page |
+| Drug details | `/en/details_data` | Drupal AJAX POST used by each Details link |
 | Anti-Bot | ❌ None | No stealth needed |
 | WAF | ❌ None | No proxy needed |
 | Auth | ❌ Not required | Public data |
@@ -262,12 +252,14 @@ sfda-drug-registry-scraper/
 ### Scraper Architecture
 
 ```python
-# Core loop — simplified
-for page in range(1, total_pages + 1):
-    data = fetch_page(session, page, page_size)   # GET + retry
-    records += [parse_record(item) for item in data["results"]]
-    save_checkpoint(page, records)                # Resume-safe
-    time.sleep(random.uniform(0.8, 2.0))          # Human-like
+# Core flow — simplified
+for page in range(total_pages):
+    rows = fetch_list_page(session, page)
+    for row in rows:
+        detail = fetch_drug_detail(session, row)
+        records.append(parse_record(row, detail))
+        checkpoint(row)
+        time.sleep(random.uniform(0.8, 2.0))
 
 export_excel(records, "sfda_registered_drugs.xlsx")
 ```
