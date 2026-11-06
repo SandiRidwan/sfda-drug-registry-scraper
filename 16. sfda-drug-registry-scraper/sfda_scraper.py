@@ -1,7 +1,7 @@
 """
 ╔══════════════════════════════════════════════════════════════════════╗
 ║   SFDA REGISTERED DRUGS SCRAPER — PRODUCTION READY                 ║
-║   API: https://sfda.gov.sa/GetDrugs.php?page=N                     ║
+║   API: SFDA drugs-list page + Drupal details AJAX endpoint          ║
 ║                                                                      ║
 ║   Verified dari audit:                                               ║
 ║     • Total records : 8,756                                          ║
@@ -22,8 +22,11 @@ import random
 import json
 import sys
 import logging
+import re
+from html.parser import HTMLParser
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 # ── LOGGING ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -39,13 +42,11 @@ log = logging.getLogger(__name__)
 
 # ── KONFIGURASI ───────────────────────────────────────────────────────────────
 
-API_URL     = "https://sfda.gov.sa/GetDrugs.php"
+BASE_URL    = "https://www.sfda.gov.sa"
+LIST_URL    = f"{BASE_URL}/en/drugs-list"
+DETAIL_PATH = "/en/details_data"
 OUTPUT_FILE = "sfda_registered_drugs.xlsx"
-CHECKPOINT  = "sfda_checkpoint.json"   # resume jika scraping terhenti
-
-# Dari audit: pageSize=10, tapi kita coba naikkan ke 100 untuk efisiensi
-# Fallback ke 10 jika server menolak pageSize custom
-PAGE_SIZE_REQUEST = 100   # akan dicoba dulu; lihat fungsi probe_page_size()
+CHECKPOINT  = "sfda_checkpoint.jsonl"
 
 # Delay antar request (detik)
 DELAY_MIN = 0.8
@@ -55,55 +56,16 @@ DELAY_MAX = 2.0
 MAX_RETRIES   = 5
 BACKOFF_BASE  = 3   # detik, dikali 2^attempt saat retry
 
-# Header persis seperti yang direcord di DevTools
+# Header untuk halaman daftar; sesi yang sama juga dipakai untuk request AJAX.
 HEADERS = {
-    "Accept":          "application/json, text/javascript, */*; q=0.01",
+    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",
     "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Referer":         "https://www.sfda.gov.sa/en/drugs-list",
+    "Referer":         LIST_URL,
     "Connection":      "keep-alive",
     "DNT":             "1",
-}
-
-# ── MAPPING FIELD (dari audit JSON) ──────────────────────────────────────────
-# Semua field yang tersedia di API → nama kolom di Excel
-FIELD_MAP = {
-    # 5 field utama yang diminta klien
-    "tradeName":                  "Drug Name",
-    "manufacturerName":           "Manufacturing Company",
-    "manufacturerCountry":        "Country of Manufacture",
-    "agent":                      "Marketing Company / Saudi Agent",
-    "registerNumber":             "Registration Number",
-
-    # Field tambahan yang bisa berguna (keep untuk kelengkapan data)
-    "scientificName":             "Scientific Name",
-    "domainEN":                   "Drug Domain",
-    "drugType":                   "Drug Type",
-    "doesageForm":                "Dosage Form",
-    "administrationRoute":        "Administration Route",
-    "strength":                   "Strength",
-    "strengthUnit":               "Strength Unit",
-    "packageType":                "Package Type",
-    "packageSize":                "Package Size",
-    "size":                       "Volume / Size",
-    "sizeUnit":                   "Size Unit",
-    "price":                      "Price (SAR)",
-    "marketingStatus":            "Marketing Status",
-    "authorizationStatus":        "Authorization Status",
-    "legalStatusEn":              "Legal Status",
-    "productControl":             "Product Control",
-    "distributionArea":           "Distribution Area",
-    "storageConditions":          "Storage Conditions",
-    "shelfLife":                  "Shelf Life (months)",
-    "registerYear":               "Registration Year",
-    "atcCode1":                   "ATC Code 1",
-    "atcCode2":                   "ATC Code 2",
-    "companyName":                "Company Name",
-    "companyCountryEn":           "Company Country",
-    "additionalManufacturer":     "Additional Manufacturer",
-    "additionalManufacturerCountry": "Additional Manufacturer Country",
 }
 
 # Kolom output yang diurutkan (5 utama di depan)
@@ -145,93 +107,296 @@ COLUMN_ORDER = [
 # HELPER FUNCTIONS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def fetch_page(session: requests.Session, page: int, page_size: int) -> dict | None:
-    """
-    Fetch satu halaman dari API dengan retry + exponential backoff.
-    Returns dict response atau None jika semua retry gagal.
-    """
-    params = {"page": page, "pageSize": page_size}
+class DrugListParser(HTMLParser):
+    """Extract list rows, detail links, and pager indices from the SFDA page."""
 
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.rows = []
+        self.page_indices = []
+        self._table_depth = 0
+        self._in_list_table = False
+        self._row = None
+        self._cell_parts = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "table" and not self._in_list_table:
+            classes = attrs.get("class", "").split()
+            if "responsive-enabled" in classes:
+                self._in_list_table = True
+                self._table_depth = 1
+        elif tag == "table" and self._in_list_table:
+            self._table_depth += 1
+
+        if tag == "a":
+            href = attrs.get("href", "")
+            page_value = parse_qs(urlsplit(href).query).get("page", [])
+            if page_value and page_value[0].isdigit():
+                self.page_indices.append(int(page_value[0]))
+            if self._row is not None and href.startswith(DETAIL_PATH):
+                self._row["detail_href"] = href
+
+        if self._in_list_table and tag == "tr":
+            self._row = {"cells": [], "detail_href": ""}
+        elif self._row is not None and tag in ("th", "td"):
+            self._cell_parts = []
+        elif self._cell_parts is not None and tag == "br":
+            self._cell_parts.append("\n")
+
+    def handle_data(self, data):
+        if self._cell_parts is not None:
+            self._cell_parts.append(data)
+
+    def handle_endtag(self, tag):
+        if self._row is not None and tag in ("th", "td") and self._cell_parts is not None:
+            value = " ".join("".join(self._cell_parts).split())
+            self._row["cells"].append(value)
+            self._cell_parts = None
+        elif self._in_list_table and tag == "tr" and self._row is not None:
+            if self._row["cells"]:
+                self.rows.append(self._row)
+            self._row = None
+            self._cell_parts = None
+        elif tag == "table" and self._in_list_table:
+            self._table_depth -= 1
+            if self._table_depth == 0:
+                self._in_list_table = False
+
+
+class DetailTableParser(HTMLParser):
+    """Parse label/value rows from the HTML embedded in Drupal's AJAX response."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.fields = {}
+        self._in_row = False
+        self._cell_tag = None
+        self._cell_parts = []
+        self._cells = []
+
+    def handle_starttag(self, tag, _attrs):
+        if tag == "tr":
+            self._in_row = True
+            self._cells = []
+        elif self._in_row and tag in ("th", "td"):
+            self._cell_tag = tag
+            self._cell_parts = []
+        elif self._cell_tag == "td" and tag == "br":
+            self._cell_parts.append("\n")
+
+    def handle_data(self, data):
+        if self._cell_tag is not None:
+            self._cell_parts.append(data)
+
+    def handle_endtag(self, tag):
+        if self._cell_tag == tag and tag in ("th", "td"):
+            value = "".join(self._cell_parts).strip()
+            self._cells.append(value)
+            self._cell_tag = None
+        elif tag == "tr" and self._in_row:
+            if len(self._cells) >= 2:
+                label = " ".join(self._cells[0].split())
+                if label:
+                    self.fields[label] = self._cells[1].strip()
+            self._in_row = False
+
+
+def request_with_retry(session: requests.Session, method: str, url: str, **kwargs):
+    """Run a request with retries for transient network, rate-limit, and server errors."""
     for attempt in range(MAX_RETRIES):
         try:
-            resp = session.get(
-                API_URL,
-                params=params,
-                headers=HEADERS,
-                timeout=30,
+            response = session.request(method, url, timeout=30, **kwargs)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            if attempt == MAX_RETRIES - 1:
+                raise RuntimeError(f"{method} {url} failed after {MAX_RETRIES} attempts: {exc}") from exc
+            wait = BACKOFF_BASE * (2 ** attempt)
+            log.warning(f"Network error: {exc}. Retry {attempt + 1}/{MAX_RETRIES} in {wait}s...")
+            time.sleep(wait)
+            continue
+
+        if response.status_code == 200:
+            return response
+        if response.status_code == 429 or response.status_code in (500, 502, 503, 504):
+            if attempt == MAX_RETRIES - 1:
+                break
+            wait = BACKOFF_BASE * (2 ** attempt)
+            log.warning(
+                f"HTTP {response.status_code}. Retry {attempt + 1}/{MAX_RETRIES} in {wait}s..."
             )
+            time.sleep(wait)
+            continue
 
-            if resp.status_code == 200:
-                data = resp.json()
-                # Validasi response punya struktur yang benar
-                if "results" in data and isinstance(data["results"], list):
-                    return data
-                else:
-                    log.warning(f"Page {page}: response JSON tidak punya key 'results'. Keys: {list(data.keys())}")
-                    return None
+        raise RuntimeError(f"{method} {url} returned HTTP {response.status_code}")
 
-            elif resp.status_code == 429:
-                wait = BACKOFF_BASE * (2 ** attempt)
-                log.warning(f"Page {page}: Rate limited (429). Tunggu {wait}s...")
-                time.sleep(wait)
+    raise RuntimeError(f"{method} {url} failed after {MAX_RETRIES} attempts")
 
-            elif resp.status_code in (500, 502, 503, 504):
-                wait = BACKOFF_BASE * (2 ** attempt)
-                log.warning(f"Page {page}: Server error {resp.status_code}. Retry {attempt+1}/{MAX_RETRIES} dalam {wait}s...")
-                time.sleep(wait)
 
+def parse_drug_list(html: str, current_page: int) -> tuple[list[dict], int, str]:
+    """Parse the list page and return its rows, total page count, and Drupal AJAX library state."""
+    parser = DrugListParser()
+    parser.feed(html)
+
+    settings_match = re.search(
+        r'<script[^>]+data-drupal-selector="drupal-settings-json"[^>]*>(.*?)</script>',
+        html,
+        re.DOTALL,
+    )
+    if not settings_match:
+        raise ValueError("The SFDA page did not include Drupal AJAX settings.")
+    settings = json.loads(settings_match.group(1))
+    libraries = settings.get("ajaxPageState", {}).get("libraries")
+    if not libraries:
+        raise ValueError("The SFDA page did not include Drupal AJAX library state.")
+
+    data_rows = [
+        row for row in parser.rows
+        if len(row["cells"]) >= 5 and row["detail_href"]
+    ]
+    if not data_rows and not (
+        current_page > 0 and re.search(r"\bNo Results Found\b", html, re.IGNORECASE)
+    ):
+        raise ValueError(
+            f"Page {current_page} did not contain the expected drugs table "
+            "or an explicit empty-results message."
+        )
+
+    records = []
+    for row in data_rows:
+        cells = row["cells"]
+        detail_query = parse_qs(urlsplit(row["detail_href"]).query)
+        registration_number = detail_query.get("id", [""])[0]
+        records.append({
+            "Scientific Name": cells[0],
+            "Drug Name": cells[1],
+            "Strength": cells[2],
+            "Dosage Form": cells[3],
+            "Price (SAR)": cells[4],
+            "Registration Number": registration_number,
+            "detail_href": row["detail_href"],
+        })
+
+    last_page_index = max(parser.page_indices, default=current_page)
+    return records, last_page_index + 1, libraries
+
+
+def fetch_list_page(session: requests.Session, page: int) -> str:
+    response = request_with_retry(
+        session,
+        "GET",
+        LIST_URL,
+        params={"page": page},
+        headers={"Accept": HEADERS["Accept"]},
+    )
+    return response.text
+
+
+def fetch_drug_detail(
+    session: requests.Session,
+    detail_href: str,
+    page: int,
+    ajax_libraries: str,
+) -> dict:
+    """Call the same Drupal AJAX detail route used by the SFDA page's Details links."""
+    parts = urlsplit(urljoin(BASE_URL, detail_href))
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    query.append(("_wrapper_format", "drupal_bootstrap4_modal"))
+    detail_url = urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+    )
+    payload = {
+        "js": "true",
+        "dialogOptions[dialogClasses]": "modal-lg",
+        "_drupal_ajax": "1",
+        "ajax_page_state[theme]": "sfda_main",
+        "ajax_page_state[theme_token]": "",
+        "ajax_page_state[libraries]": ajax_libraries,
+    }
+    response = request_with_retry(
+        session,
+        "POST",
+        detail_url,
+        data=payload,
+        headers={
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Referer": f"{LIST_URL}?page={page}",
+            "X-Requested-With": "XMLHttpRequest",
+        },
+    )
+
+    try:
+        commands = response.json()
+    except requests.exceptions.JSONDecodeError as exc:
+        raise ValueError(f"Detail response for {detail_href} was not JSON.") from exc
+
+    detail_html = next(
+        (
+            command.get("data", "")
+            for command in commands
+            if command.get("command") == "openBootstrap4Dialog"
+        ),
+        "",
+    )
+    if not detail_html:
+        raise ValueError(f"Detail response for {detail_href} did not contain drug details.")
+
+    parser = DetailTableParser()
+    parser.feed(detail_html)
+    if not parser.fields:
+        raise ValueError(f"Could not parse drug details from {detail_href}.")
+    return parser.fields
+
+
+def parse_record(summary: dict, details: dict) -> dict:
+    """Map the current SFDA detail labels into the existing Excel column schema."""
+    manufacturer_names = []
+    manufacturer_countries = []
+    for line in details.get("Manufacturers", "").splitlines():
+        match = re.search(r"Name:\s*(.*?)\s*\|\s*Country:\s*(.*)", line)
+        if match:
+            manufacturer_names.append(match.group(1).strip())
+            manufacturer_countries.append(match.group(2).strip())
+
+    output = {column: "" for column in COLUMN_ORDER}
+    output.update({
+        "Drug Name": details.get("Trade Name") or summary["Drug Name"],
+        "Manufacturing Company": manufacturer_names[0] if manufacturer_names else "",
+        "Country of Manufacture": manufacturer_countries[0] if manufacturer_countries else "",
+        "Marketing Company / Saudi Agent": details.get("Agents", ""),
+        "Registration Number": details.get("Register Number") or summary["Registration Number"],
+        "Scientific Name": details.get("Scientific Name") or summary["Scientific Name"],
+        "Dosage Form": details.get("Dosage Form") or summary["Dosage Form"],
+        "Administration Route": details.get("Route of Administration", ""),
+        "Strength": details.get("Strength") or summary["Strength"],
+        "Strength Unit": details.get("Strength Unit", ""),
+        "Package Type": details.get("Package Type", ""),
+        "Package Size": details.get("Package Size", ""),
+        "Volume / Size": details.get("Size", ""),
+        "Size Unit": details.get("Size Unit", ""),
+        "Price (SAR)": details.get("Price") or summary["Price (SAR)"],
+        "Marketing Status": details.get("Marketing Status", ""),
+        "Authorization Status": details.get("Authorization Status", ""),
+        "Legal Status": details.get("Legal Status", ""),
+        "Product Control": details.get("Product Control", ""),
+        "Distribution Area": details.get("Distribution Site", ""),
+        "Storage Conditions": details.get("Storage Conditions", ""),
+        "Shelf Life (months)": details.get("Shelf Life", ""),
+        "ATC Code 1": details.get("ATC Code 1", ""),
+        "ATC Code 2": details.get("ATC Code 2", ""),
+        "Company Name": details.get("Marketing Company", ""),
+        "Company Country": details.get("Country of marketing company", ""),
+        "Additional Manufacturer": "; ".join(manufacturer_names[1:]),
+        "Additional Manufacturer Country": "; ".join(manufacturer_countries[1:]),
+    })
+
+    for column, value in output.items():
+        if isinstance(value, str):
+            value = value.strip()
+            if detect_arabic(value):
+                output[column] = f"[AR_FLAG] {value}"
             else:
-                log.error(f"Page {page}: HTTP {resp.status_code}. Berhenti retry.")
-                return None
-
-        except requests.exceptions.Timeout:
-            wait = BACKOFF_BASE * (2 ** attempt)
-            log.warning(f"Page {page}: Timeout. Retry {attempt+1}/{MAX_RETRIES} dalam {wait}s...")
-            time.sleep(wait)
-
-        except requests.exceptions.ConnectionError as e:
-            wait = BACKOFF_BASE * (2 ** attempt)
-            log.warning(f"Page {page}: Connection error ({e}). Retry {attempt+1}/{MAX_RETRIES} dalam {wait}s...")
-            time.sleep(wait)
-
-        except json.JSONDecodeError:
-            log.error(f"Page {page}: Response bukan JSON valid. Skip.")
-            return None
-
-        except Exception as e:
-            log.error(f"Page {page}: Unexpected error: {e}")
-            return None
-
-    log.error(f"Page {page}: Semua {MAX_RETRIES} retry gagal. Skip halaman ini.")
-    return None
-
-
-def probe_page_size(session: requests.Session) -> tuple[int, int, int]:
-    """
-    Fetch halaman 1 untuk mendapatkan metadata: rowCount, pageCount, pageSize.
-    Coba pageSize=100 dulu. Fallback ke default (10) jika gagal.
-    Returns: (total_records, actual_page_count, actual_page_size)
-    """
-    log.info(f"Probing API dengan pageSize={PAGE_SIZE_REQUEST}...")
-    data = fetch_page(session, page=1, page_size=PAGE_SIZE_REQUEST)
-
-    if not data:
-        log.error("Gagal probe API. Cek koneksi dan URL.")
-        sys.exit(1)
-
-    row_count  = data.get("rowCount",  0)
-    page_count = data.get("pageCount", 0)
-    page_size  = data.get("pageSize",  10)
-
-    if row_count == 0:
-        log.warning("rowCount=0 dari API. Kemungkinan pageSize custom tidak didukung. Fallback ke pageSize=10.")
-        data = fetch_page(session, page=1, page_size=10)
-        row_count  = data.get("rowCount",  8756)
-        page_count = data.get("pageCount", 876)
-        page_size  = 10
-
-    log.info(f"API confirmed: {row_count:,} records | {page_count} pages | pageSize={page_size}")
-    return row_count, page_count, page_size
+                output[column] = value
+    return output
 
 
 def detect_arabic(value) -> bool:
@@ -241,53 +406,41 @@ def detect_arabic(value) -> bool:
     return any('\u0600' <= c <= '\u06FF' for c in value)
 
 
-def parse_record(item: dict) -> dict:
-    """
-    Ekstrak semua field dari satu drug record API.
-    Handle None dengan string kosong. Flag field Arab.
-    """
-    parsed = {}
-    for api_key, col_name in FIELD_MAP.items():
-        val = item.get(api_key)
-
-        if val is None:
-            parsed[col_name] = ""
-        elif isinstance(val, str):
-            val = val.strip()
-            if detect_arabic(val):
-                parsed[col_name] = f"[AR_FLAG] {val}"
-            else:
-                parsed[col_name] = val
-        else:
-            parsed[col_name] = val
-
-    return parsed
+def append_checkpoint(payload: dict):
+    """Append one completed item or page marker for reliable resume."""
+    with open(CHECKPOINT, "a", encoding="utf-8") as checkpoint_file:
+        checkpoint_file.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
-def save_checkpoint(page: int, records: list):
-    """Simpan progress ke file JSON agar bisa resume jika terhenti."""
-    cp = {
-        "last_page":     page,
-        "records_count": len(records),
-        "timestamp":     datetime.now().isoformat(),
-    }
-    with open(CHECKPOINT, "w") as f:
-        json.dump(cp, f)
+def load_checkpoint() -> tuple[list[dict], set[tuple[int, str]], set[int]]:
+    """Restore scraped rows, completed item keys, and completed list pages."""
+    records = []
+    completed_items = set()
+    completed_pages = set()
+    if not Path(CHECKPOINT).exists():
+        return records, completed_items, completed_pages
 
+    with open(CHECKPOINT, encoding="utf-8") as checkpoint_file:
+        for line_number, line in enumerate(checkpoint_file, start=1):
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                log.warning(f"Ignoring incomplete checkpoint line {line_number}.")
+                continue
+            if "record" in item:
+                page = item["page"]
+                registration_number = item["registration_number"]
+                records.append(item["record"])
+                completed_items.add((page, registration_number))
+            elif "page_complete" in item:
+                completed_pages.add(item["page_complete"])
 
-def load_checkpoint() -> int:
-    """Load checkpoint. Return halaman terakhir yang berhasil, atau 0."""
-    if Path(CHECKPOINT).exists():
-        try:
-            with open(CHECKPOINT) as f:
-                cp = json.load(f)
-            last = cp.get("last_page", 0)
-            log.info(f"Checkpoint ditemukan: resume dari halaman {last + 1} "
-                     f"({cp.get('records_count', 0)} records sudah tersimpan)")
-            return last
-        except Exception:
-            return 0
-    return 0
+    if records or completed_pages:
+        log.info(
+            f"Checkpoint ditemukan: {len(records):,} records dari "
+            f"{len(completed_pages)} halaman selesai."
+        )
+    return records, completed_items, completed_pages
 
 # ══════════════════════════════════════════════════════════════════════════════
 # EXPORT TO EXCEL
@@ -364,7 +517,7 @@ def export_excel(records: list, filename: str):
         meta_ws["A1"] = "SFDA Registered Drugs — Scrape Metadata"
         meta_ws["A1"].font = Font(bold=True, size=12)
         meta_data = [
-            ("Source URL",    API_URL),
+            ("Source URL",    f"{LIST_URL} ({DETAIL_PATH} AJAX details)"),
             ("Scrape Date",   datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             ("Total Records", len(df)),
             ("Script",        "sfda_scraper.py"),
@@ -386,66 +539,75 @@ def export_excel(records: list, filename: str):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def scrape() -> list:
-    """Loop semua halaman API, parse records, return list of dicts."""
+    """Fetch list pages and each drug's detail data through the frontend AJAX endpoint."""
     session = requests.Session()
     session.headers.update(HEADERS)
 
-    # Probe API untuk mendapatkan pagination metadata
-    total_records, total_pages, page_size = probe_page_size(session)
+    log.info(f"Checking SFDA list page: {LIST_URL}?page=0")
+    first_page_html = fetch_list_page(session, page=0)
+    first_page_records, total_pages, ajax_libraries = parse_drug_list(first_page_html, 0)
+    log.info(
+        f"Frontend confirmed: {total_pages} pages | "
+        f"{len(first_page_records)} drugs on the first page"
+    )
 
-    # Resume dari checkpoint jika ada
-    start_page   = load_checkpoint() + 1
-    all_records  = []
-    skipped_pages = []
+    all_records, completed_items, completed_pages = load_checkpoint()
 
     start_time = time.time()
-    log.info(f"Mulai scraping dari halaman {start_page}/{total_pages}...")
-    log.info(f"Estimasi selesai: {total_pages * ((DELAY_MIN + DELAY_MAX) / 2) / 60:.1f} menit")
+    log.info(f"Starting scrape at page 1/{total_pages}...")
+    log.info("Each drug's full details are fetched from the Drupal AJAX endpoint.")
     log.info("-" * 60)
 
-    for page in range(start_page, total_pages + 1):
-        data = fetch_page(session, page=page, page_size=page_size)
-
-        if data is None:
-            log.warning(f"  Page {page}: SKIP (gagal setelah {MAX_RETRIES} retry)")
-            skipped_pages.append(page)
+    for page in range(total_pages):
+        if page in completed_pages:
             continue
 
-        results = data.get("results", [])
-        page_records = [parse_record(item) for item in results]
-        all_records.extend(page_records)
+        if page == 0:
+            page_records = first_page_records
+            page_libraries = ajax_libraries
+        else:
+            page_html = fetch_list_page(session, page)
+            page_records, _, page_libraries = parse_drug_list(page_html, page)
 
-        # Progress log setiap 50 halaman
-        if page % 50 == 0 or page == total_pages:
-            elapsed   = time.time() - start_time
-            progress  = page / total_pages * 100
-            remaining = (elapsed / page) * (total_pages - page) if page > 0 else 0
-            log.info(
-                f"  Page {page:>4}/{total_pages} | "
-                f"{progress:5.1f}% | "
-                f"{len(all_records):>6,} records | "
-                f"~{remaining/60:.1f} mnt tersisa"
+        if not page_records:
+            log.warning(f"Page {page + 1}: SFDA explicitly returned no results; continuing.")
+
+        for summary in page_records:
+            registration_number = summary["Registration Number"]
+            item_key = (page, registration_number)
+            if item_key in completed_items:
+                continue
+
+            details = fetch_drug_detail(
+                session,
+                summary["detail_href"],
+                page,
+                page_libraries,
             )
-            save_checkpoint(page, all_records)
+            record = parse_record(summary, details)
+            all_records.append(record)
+            completed_items.add(item_key)
+            append_checkpoint({
+                "page": page,
+                "registration_number": registration_number,
+                "record": record,
+            })
+            time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
-        # Human-like delay antar request
-        time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
+        append_checkpoint({"page_complete": page})
+        completed_pages.add(page)
 
-    # Retry halaman yang dilewati
-    if skipped_pages:
-        log.warning(f"\nRetrying {len(skipped_pages)} halaman yang dilewati: {skipped_pages}")
-        time.sleep(10)  # cooldown sebelum retry
-        for page in skipped_pages:
-            data = fetch_page(session, page=page, page_size=page_size)
-            if data:
-                page_records = [parse_record(item) for item in data.get("results", [])]
-                all_records.extend(page_records)
-                log.info(f"  Retry page {page}: OK ({len(page_records)} records)")
-            else:
-                log.error(f"  Retry page {page}: MASIH GAGAL. Data mungkin tidak lengkap.")
+        if page % 10 == 0 or page == total_pages - 1:
+            elapsed = time.time() - start_time
+            progress = (page + 1) / total_pages * 100
+            log.info(
+                f"  Page {page + 1:>4}/{total_pages} | "
+                f"{progress:5.1f}% | {len(all_records):>6,} records | "
+                f"{elapsed / 60:.1f} min elapsed"
+            )
 
     elapsed_total = time.time() - start_time
-    log.info(f"\nScraping selesai: {len(all_records):,} records dalam {elapsed_total/60:.1f} menit")
+    log.info(f"\nScraping completed: {len(all_records):,} records in {elapsed_total/60:.1f} minutes")
     return all_records
 
 
@@ -456,7 +618,8 @@ def scrape() -> list:
 def main():
     print("=" * 60)
     print("  SFDA DRUGS LIST SCRAPER")
-    print(f"  API: {API_URL}")
+    print(f"  List: {LIST_URL}")
+    print(f"  Details: {DETAIL_PATH} (Drupal AJAX POST)")
     print(f"  Target output: {OUTPUT_FILE}")
     print(f"  Waktu mulai: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
@@ -487,6 +650,7 @@ def main():
         sys.exit(0)
     except Exception as e:
         log.exception(f"Fatal error: {e}")
+        sys.exit(1)
         sys.exit(1)
 
 
